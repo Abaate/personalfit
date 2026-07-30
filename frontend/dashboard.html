@@ -1,0 +1,93 @@
+<!-- dashboard.html -->
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Dashboard — FitApp</title>
+    <link rel="icon" href="/favicon.ico" type="image/x-icon">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+    <div class="app-container">
+        <nav class="navbar">
+            <div class="brand">
+                <span class="brand-mark">●</span>
+                <h1>FitApp<span id="user-role-badge" class="role-badge"></span></h1>
+            </div>
+            <div class="navbar-actions">
+                <span id="user-name-display" class="user-name"></span>
+                <button class="btn btn-ghost btn-sm" onclick="sair()">Sair</button>
+            </div>
+        </nav>
+
+        <div class="content-area">
+
+            <!-- ÁREA DO ALUNO -->
+            <div id="area-aluno" class="hidden">
+                <div class="section-header">
+                    <h2>Seu progresso</h2>
+                    <p class="section-subtitle">Tudo o que você precisa treinar hoje, num só lugar.</p>
+                </div>
+
+                <div class="card card-highlight">
+                    <span class="eyebrow">Próximo treino</span>
+                    <h3>Treino A — Peito e Tríceps</h3>
+                    <div class="status-row">
+                        <span class="status-pill status-pending">Pendente</span>
+                    </div>
+                    <button class="btn btn-primary" style="margin-top: 18px;">Iniciar treino agora</button>
+                </div>
+
+                <div class="card">
+                    <h3>Atalhos rápidos</h3>
+                    <ul class="shortcut-list">
+                        <li><span class="shortcut-icon">📊</span> Evolução e medidas</li>
+                        <li><span class="shortcut-icon">🍏</span> Plano alimentar</li>
+                        <li><span class="shortcut-icon">💬</span> Chat com o personal</li>
+                        <li><span class="shortcut-icon">💳</span> Assinatura e pagamentos</li>
+                    </ul>
+                </div>
+            </div>
+
+            <!-- ÁREA ADMIN / PERSONAL -->
+            <div id="area-admin" class="hidden">
+                <div class="section-header">
+                    <h2>Painel de gestão</h2>
+                    <p class="section-subtitle">Acompanhe e gerencie todos os seus alunos.</p>
+                </div>
+
+                <div class="card">
+                    <h3>Alunos cadastrados</h3>
+                    <div class="table-wrap">
+                        <table id="tabela-alunos">
+                            <thead>
+                                <tr>
+                                    <th>ID</th>
+                                    <th>Nome completo</th>
+                                    <th>Usuário (login)</th>
+                                    <th>Ações</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <!-- Preenchido via JS -->
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+
+        </div>
+    </div>
+
+    <script src="app.js"></script>
+    <script>
+        // Ao carregar a página dashboard, verifica autenticação
+        window.onload = carregarDashboard;
+    </script>
+</body>
+</html>
