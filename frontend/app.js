@@ -1021,7 +1021,7 @@ function App() {
     type: "button",
     onClick: () => handleFetchDemoForExercise(idx),
     className: "px-3 text-xs bg-lime-500 hover:bg-lime-400 rounded-lg text-ink-950 font-semibold whitespace-nowrap"
-  }, "Buscar"))), /*#__PURE__*/React.createElement("div", {
+  }, "🔎"))), /*#__PURE__*/React.createElement("div", {
     className: "grid grid-cols-2 sm:grid-cols-4 gap-2"
   }, /*#__PURE__*/React.createElement("input", {
     type: "number",
