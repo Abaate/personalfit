@@ -1,9 +1,10 @@
 /* ==========================================================
-   FitApp — Design System
-   Paleta: fundo grafite (ink), acento lima, acento coral
+   FitApp — Design System (Responsivo & Mobile-First Enhanced)
+   Paleta: Fundo grafite (ink), Acento lima, Acento coral
    ========================================================== */
 
 :root {
+    /* Paleta de Cores */
     --ink-950: #0a0e14;
     --ink-900: #11161f;
     --ink-800: #1a212c;
@@ -23,55 +24,66 @@
     --text-mid: #aab2c0;
     --text-low: #6b7688;
 
+    /* Bordas */
     --radius-sm: 8px;
     --radius-md: 12px;
     --radius-lg: 18px;
+    --radius-full: 9999px;
 
+    /* Sombras e Efeitos */
     --shadow-glow: 0 0 0 1px rgba(200,241,105,0.15), 0 8px 24px -8px rgba(200,241,105,0.28);
     --shadow-card: 0 4px 20px -6px rgba(0,0,0,0.45);
     --shadow-card-hover: 0 10px 30px -8px rgba(0,0,0,0.55);
 
+    /* Animações */
     --ease: cubic-bezier(.2,.8,.2,1);
+
+    /* Espaçamentos e Safe Areas (iOS/Android Notch support) */
+    --safe-top: env(safe-area-inset-top, 0px);
+    --safe-bottom: env(safe-area-inset-bottom, 0px);
+    --safe-left: env(safe-area-inset-left, 0px);
+    --safe-right: env(safe-area-inset-right, 0px);
 }
 
-* {
+/* ================= Reset e Base ================= */
+
+*, *::before, *::after {
     margin: 0;
     padding: 0;
     box-sizing: border-box;
-    min-width: 0; /* impede que filhos flex/grid estourem o container por causa de texto longo */
+    min-width: 0;
 }
 
 html {
-    /* Evita que o texto encolha automaticamente no iOS quando o teclado abre */
     -webkit-text-size-adjust: 100%;
+    scroll-behavior: smooth;
 }
 
 body {
-    font-family: 'Inter', 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+    font-family: 'Inter', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
     background-color: var(--ink-950);
     background-image:
         radial-gradient(circle at 12% 0%, rgba(200,241,105,0.07), transparent 40%),
         radial-gradient(circle at 88% 10%, rgba(255,107,74,0.05), transparent 35%);
+    background-attachment: fixed;
     color: var(--text-hi);
-    /* Antes: display:flex + align-items:center cortava o topo do layout
-       sempre que o conteúdo (ex: .app-container do dashboard) era mais alto
-       que a tela, pois o flex centralizava o excesso igualmente para cima
-       e para baixo — a parte de cima ficava inacessível/cortada. Agora o
-       body flui normalmente de cima para baixo e cada componente cuida da
-       própria centralização (veja .auth-container). */
-    display: block;
+    display: flex;
+    flex-direction: column;
     width: 100%;
     min-height: 100vh;
-    min-height: 100dvh; /* corrige altura em navegadores mobile com barra de endereço */
+    min-height: 100dvh;
     line-height: 1.5;
     -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    padding-left: var(--safe-left);
+    padding-right: var(--safe-right);
 }
 
+/* Tipografia Fluida */
 h1, h2, h3, h4 {
-    font-family: 'Space Grotesk', 'Segoe UI', sans-serif;
-    letter-spacing: -0.01em;
+    font-family: 'Space Grotesk', system-ui, sans-serif;
+    letter-spacing: -0.02em;
     line-height: 1.2;
-    /* Qualquer título (nome de aluno, treino etc.) quebra a linha em vez de estourar o card */
     overflow-wrap: anywhere;
     word-break: break-word;
     hyphens: auto;
@@ -82,32 +94,32 @@ p, span, a, td, th, label, li {
     word-break: break-word;
 }
 
-img, svg {
+img, svg, video {
     max-width: 100%;
+    height: auto;
     display: block;
 }
 
-/* Barra de rolagem mais discreta (onde suportado) */
+/* Scrollbars customizadas */
 * {
     scrollbar-width: thin;
     scrollbar-color: var(--ink-600) transparent;
 }
-*::-webkit-scrollbar { height: 8px; width: 8px; }
+*::-webkit-scrollbar { height: 6px; width: 6px; }
 *::-webkit-scrollbar-track { background: transparent; }
-*::-webkit-scrollbar-thumb { background: var(--ink-600); border-radius: 999px; }
+*::-webkit-scrollbar-thumb { background: var(--ink-600); border-radius: var(--radius-full); }
 *::-webkit-scrollbar-thumb:hover { background: var(--ink-500); }
 
-/* ================= Telas de Autenticação ================= */
+/* ================= Autenticação ================= */
 
 .auth-container {
     background-color: var(--ink-900);
     border: 1px solid var(--ink-700);
-    padding: 40px;
+    padding: clamp(20px, 6vw, 40px);
     border-radius: var(--radius-lg);
     box-shadow: var(--shadow-card);
-    width: 100%;
-    max-width: 400px;
-    margin: 60px auto; /* centraliza horizontalmente e dá respiro no topo, sem cortar nada */
+    width: min(100% - 32px, 420px);
+    margin: clamp(20px, 8vh, 60px) auto;
 }
 
 h2 {
@@ -119,7 +131,7 @@ h2 {
 }
 
 .input-group {
-    margin-bottom: 15px;
+    margin-bottom: 16px;
 }
 
 .input-group label {
@@ -132,12 +144,13 @@ h2 {
 
 .input-group input {
     width: 100%;
+    min-height: 46px; /* Melhor para toque no mobile */
     padding: 12px 14px;
     border: 1px solid var(--ink-700);
     border-radius: var(--radius-sm);
     background-color: var(--ink-800);
     color: var(--text-hi);
-    font-size: 16px; /* >=16px evita zoom automático no iOS ao focar o campo */
+    font-size: 16px; /* Evita zoom automático no iOS */
     outline: none;
     transition: border-color .2s var(--ease), box-shadow .2s var(--ease), background-color .2s var(--ease);
 }
@@ -152,8 +165,10 @@ h2 {
 
 .input-group input:focus {
     border-color: var(--lime-500);
-    box-shadow: 0 0 0 3px rgba(200,241,105,0.12);
+    box-shadow: 0 0 0 3px rgba(200,241,105,0.15);
 }
+
+/* ================= Botões ================= */
 
 .btn {
     display: inline-flex;
@@ -161,7 +176,8 @@ h2 {
     justify-content: center;
     gap: 8px;
     width: 100%;
-    padding: 13px;
+    min-height: 46px; /* Garante tamanho de clique confortável */
+    padding: 12px 20px;
     border: none;
     border-radius: var(--radius-sm);
     font-size: 15px;
@@ -170,7 +186,9 @@ h2 {
     transition: transform .15s var(--ease), background-color .2s var(--ease), filter .2s var(--ease), box-shadow .2s var(--ease);
     font-family: inherit;
     white-space: nowrap;
+    user-select: none;
     -webkit-tap-highlight-color: transparent;
+    touch-action: manipulation;
 }
 
 .btn-primary {
@@ -184,16 +202,6 @@ h2 {
     transform: translateY(-1px);
 }
 
-.btn:active {
-    transform: scale(0.98);
-}
-
-.btn:focus-visible {
-    outline: 2px solid var(--lime-400);
-    outline-offset: 2px;
-}
-
-/* Botão auxiliar usado dentro da navbar */
 .btn-ghost {
     background-color: var(--ink-800);
     color: var(--text-mid);
@@ -208,8 +216,18 @@ h2 {
 
 .btn-sm {
     width: auto;
-    padding: 8px 16px;
+    min-height: 36px;
+    padding: 6px 14px;
     font-size: 13px;
+}
+
+.btn:active {
+    transform: scale(0.97);
+}
+
+.btn:focus-visible {
+    outline: 2px solid var(--lime-400);
+    outline-offset: 2px;
 }
 
 .toggle-link {
@@ -239,66 +257,69 @@ h2 {
     flex-direction: column;
 }
 
+/* Navbar Adaptativa */
 .navbar {
-    background-color: rgba(17, 22, 31, 0.9);
-    backdrop-filter: blur(8px);
-    -webkit-backdrop-filter: blur(8px);
-    padding: 18px 28px;
+    background-color: rgba(17, 22, 31, 0.85);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+    padding: calc(14px + var(--safe-top)) clamp(16px, 4vw, 28px) 14px;
     display: flex;
     flex-wrap: wrap;
-    gap: 10px;
+    gap: 12px;
     justify-content: space-between;
     align-items: center;
     border-bottom: 1px solid var(--ink-700);
     position: sticky;
     top: 0;
-    z-index: 10;
+    z-index: 100;
 }
 
 .brand {
     display: flex;
     align-items: center;
     gap: 10px;
-    min-width: 0; /* permite que o texto trunque em vez de estourar a tela */
+    min-width: 0;
     flex: 1 1 auto;
 }
 
 .brand-mark {
     color: var(--lime-500);
-    font-size: 18px;
+    font-size: 20px;
     line-height: 1;
     flex-shrink: 0;
 }
 
 .navbar h1 {
-    font-size: 19px;
+    font-size: clamp(16px, 3.5vw, 19px);
     font-weight: 700;
     color: var(--text-hi);
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
-    /* Sobrescreve a quebra genérica de h1: aqui o nome do app deve elipsar, não empilhar */
     overflow-wrap: normal;
     word-break: normal;
-    max-width: 60vw;
+    max-width: 50vw;
 }
 
 .role-badge {
-    margin-left: 10px;
-    font-size: 11px;
-    font-weight: 600;
-    letter-spacing: 0.04em;
+    margin-left: 8px;
+    padding: 2px 8px;
+    background-color: rgba(200,241,105,0.1);
+    border: 1px solid rgba(200,241,105,0.2);
+    border-radius: var(--radius-full);
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.05em;
     text-transform: uppercase;
     color: var(--lime-400);
-    vertical-align: middle;
     white-space: nowrap;
+    display: inline-block;
 }
 
 .navbar-actions {
     display: flex;
     align-items: center;
-    gap: 16px;
-    flex-wrap: wrap;
+    gap: 12px;
     flex-shrink: 0;
 }
 
@@ -309,11 +330,13 @@ h2 {
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
-    max-width: 40vw;
+    max-width: 150px;
 }
 
+/* Área de Conteúdo */
 .content-area {
-    padding: 28px;
+    padding: clamp(16px, 4vw, 28px);
+    padding-bottom: calc(clamp(16px, 4vw, 28px) + var(--safe-bottom));
     flex: 1;
     max-width: 1100px;
     width: 100%;
@@ -335,15 +358,22 @@ h2 {
     font-size: 14px;
 }
 
+/* Grid de Cards Automático */
+.card-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, 280px), 1fr));
+    gap: 16px;
+    margin-bottom: 20px;
+}
+
 .card {
     background-color: var(--ink-900);
     border: 1px solid var(--ink-700);
-    padding: 22px;
+    padding: clamp(16px, 3.5vw, 22px);
     border-radius: var(--radius-lg);
-    margin-bottom: 20px;
+    margin-bottom: 16px;
     box-shadow: var(--shadow-card);
     transition: box-shadow .25s var(--ease), border-color .25s var(--ease);
-    /* Garante que nada dentro do card (nomes longos, urls, tags) force scroll horizontal na página */
     overflow: hidden;
 }
 
@@ -353,9 +383,9 @@ h2 {
 }
 
 .card h3 {
-    font-size: clamp(15px, 3.4vw, 16px);
+    font-size: clamp(15px, 3vw, 17px);
     color: var(--text-hi);
-    margin-bottom: 4px;
+    margin-bottom: 6px;
 }
 
 .card-highlight {
@@ -373,13 +403,14 @@ h2 {
 }
 
 .status-row {
-    margin-top: 10px;
+    margin-top: 12px;
 }
 
 .status-pill {
-    display: inline-block;
+    display: inline-flex;
+    align-items: center;
     padding: 4px 12px;
-    border-radius: 999px;
+    border-radius: var(--radius-full);
     font-size: 12px;
     font-weight: 600;
     white-space: nowrap;
@@ -397,6 +428,7 @@ h2 {
     border: 1px solid rgba(200,241,105,0.25);
 }
 
+/* Listas e Atalhos */
 .shortcut-list {
     list-style: none;
     margin-top: 14px;
@@ -406,12 +438,13 @@ h2 {
 .shortcut-list li {
     display: flex;
     align-items: center;
-    gap: 10px;
-    padding: 10px 4px;
+    gap: 12px;
+    padding: 12px 6px;
     font-size: 14px;
     border-bottom: 1px solid var(--ink-800);
     cursor: pointer;
-    transition: color .15s var(--ease), padding-left .15s var(--ease);
+    transition: color .15s var(--ease), background-color .15s var(--ease), padding-left .15s var(--ease);
+    border-radius: var(--radius-sm);
 }
 
 .shortcut-list li:last-child {
@@ -420,7 +453,8 @@ h2 {
 
 .shortcut-list li:hover {
     color: var(--text-hi);
-    padding-left: 8px;
+    background-color: rgba(255, 255, 255, 0.02);
+    padding-left: 10px;
 }
 
 .shortcut-icon {
@@ -432,28 +466,28 @@ h2 {
     display: none !important;
 }
 
+/* ================= Tabelas Responsivas ================= */
+
 .table-wrap {
     overflow-x: auto;
     margin-top: 12px;
-    -webkit-overflow-scrolling: touch; /* rolagem suave em iOS */
-    border-radius: var(--radius-sm);
+    -webkit-overflow-scrolling: touch;
+    border-radius: var(--radius-md);
     border: 1px solid var(--ink-800);
+    background-color: var(--ink-900);
 }
 
 table {
     width: 100%;
     border-collapse: collapse;
     font-size: 14px;
+    text-align: left;
 }
 
 th, td {
-    padding: 12px 14px;
-    text-align: left;
+    padding: 12px 16px;
     border-bottom: 1px solid var(--ink-800);
     color: var(--text-mid);
-    /* Células continuam em uma linha só (a rolagem horizontal do .table-wrap
-       cuida do resto); nomes muito longos ainda assim quebram graças à regra
-       global de overflow-wrap, evitando estourar a tela. */
     white-space: nowrap;
 }
 
@@ -482,107 +516,88 @@ tbody tr:last-child td {
     border-bottom: none;
 }
 
-/* ================= Responsivo ================= */
+/* ================= Regras Responsivas Adicionais ================= */
 
-/* Tablets e telas médias */
+/* Tablets e Telas Médias (<= 768px) */
 @media (max-width: 768px) {
-    .content-area {
-        padding: 20px;
-    }
-
-    .card {
-        padding: 18px;
-    }
-
-    .section-header h2 {
-        font-size: 22px;
+    .user-name {
+        display: none; /* Esconde nome do usuário para dar espaço aos botões da navbar */
     }
 }
 
-/* Celulares */
+/* Celulares (<= 640px) */
 @media (max-width: 640px) {
     .auth-container {
-        max-width: 100%;
-        padding: 28px 20px;
+        margin: 16px auto;
         border-radius: var(--radius-md);
-        margin: 24px auto;
-    }
-
-    .navbar {
-        padding: 14px 16px;
-        gap: 8px;
     }
 
     .navbar h1 {
-        font-size: 17px;
-        max-width: 55vw;
+        max-width: 40vw;
     }
 
     .role-badge {
-        display: block;
-        margin-left: 0;
-        margin-top: 2px;
+        font-size: 9px;
+        padding: 1px 6px;
     }
 
-    .navbar-actions {
-        gap: 10px;
-    }
-
-    .user-name {
-        display: none;
-    }
-
-    .content-area {
-        padding: 16px;
-    }
-
-    .section-header h2 {
-        font-size: 20px;
-    }
-
-    .section-subtitle {
-        font-size: 13px;
-    }
-
-    .card {
-        padding: 16px;
-        border-radius: var(--radius-md);
-    }
-
-    .card h3 {
-        font-size: 15px;
-    }
-
-    /* Ações dentro dos cards (ex.: "Iniciar treino agora") ocupam a largura toda,
-       facilitando o toque em telas pequenas */
-    .btn {
-        font-size: 14px;
-        padding: 12px;
+    /* Torna botões primários dentro de cards ocupando largura total */
+    .card .btn {
+        width: 100%;
     }
 
     th, td {
-        padding: 10px 8px;
+        padding: 10px 12px;
         font-size: 13px;
     }
 }
 
-/* Telas bem pequenas (celulares estreitos) */
-@media (max-width: 380px) {
+/* Telas Extremamente Pequenas / Foldables fechados (<= 360px) */
+@media (max-width: 360px) {
+    :root {
+        --radius-lg: 14px;
+    }
+
+    .navbar {
+        padding-left: 12px;
+        padding-right: 12px;
+    }
+
+    .brand-mark {
+        font-size: 16px;
+    }
+
     .navbar h1 {
         font-size: 15px;
-        max-width: 45vw;
+        max-width: 35vw;
     }
 
-    .content-area {
-        padding: 12px;
-    }
-
-    .card {
-        padding: 14px;
+    .role-badge {
+        display: none; /* Esconde badge em telas microscópicas */
     }
 
     .btn-sm {
-        padding: 8px 12px;
+        padding: 6px 10px;
         font-size: 12px;
+    }
+
+    .auth-container {
+        width: calc(100% - 16px);
+        padding: 20px 14px;
+    }
+
+    th, td {
+        padding: 8px 10px;
+        font-size: 12px;
+    }
+}
+
+/* Suporte para quem prefere pouca ou nenhuma animação */
+@media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after {
+        animation-duration: 0.01ms !important;
+        animation-iteration-count: 1 !important;
+        transition-duration: 0.01ms !important;
+        scroll-behavior: auto !important;
     }
 }
