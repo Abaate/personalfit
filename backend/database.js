@@ -1,16 +1,23 @@
 // database.js
+require('dotenv').config();
+
 const sqlite3 = require('sqlite3').verbose();
 const bcrypt = require('bcryptjs');
 const path = require('path');
 
 const dbPath = path.resolve(__dirname, 'fitapp.db');
+
 const db = new sqlite3.Database(dbPath, (err) => {
-    if (err) console.error('Erro ao conectar ao banco:', err.message);
-    else console.log('✅ Banco de dados SQLite conectado em:', dbPath);
+    if (err) {
+        console.error('Erro ao conectar ao banco:', err.message);
+    } else {
+        console.log('Banco de dados SQLite conectado em:', dbPath);
+    }
 });
 
+
 db.serialize(async () => {
-    // Tabela de Usuários
+
     db.run(`CREATE TABLE IF NOT EXISTS users (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         nome_completo TEXT NOT NULL,
@@ -19,7 +26,7 @@ db.serialize(async () => {
         role TEXT NOT NULL
     )`);
 
-    // Tabela de Avaliações Físicas
+
     db.run(`CREATE TABLE IF NOT EXISTS avaliacoes (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         aluno_id INTEGER NOT NULL,
@@ -35,7 +42,7 @@ db.serialize(async () => {
         FOREIGN KEY(aluno_id) REFERENCES users(id) ON DELETE CASCADE
     )`);
 
-    // Tabela de Treinos
+
     db.run(`CREATE TABLE IF NOT EXISTS treinos (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         aluno_id INTEGER NOT NULL,
@@ -46,7 +53,7 @@ db.serialize(async () => {
         FOREIGN KEY(aluno_id) REFERENCES users(id) ON DELETE CASCADE
     )`);
 
-    // Tabela de Exercícios (agora com demonstracao_url e instrucao_texto)
+
     db.run(`CREATE TABLE IF NOT EXISTS exercicios (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         treino_id INTEGER NOT NULL,
@@ -63,7 +70,7 @@ db.serialize(async () => {
         FOREIGN KEY(treino_id) REFERENCES treinos(id) ON DELETE CASCADE
     )`);
 
-    // Garante colunas extras (silencia erros se já existirem)
+
     const colunasParaAdicionar = [
         { tabela: 'treinos', coluna: `nivel TEXT DEFAULT 'Intermediário'` },
         { tabela: 'treinos', coluna: `descricao TEXT` },
@@ -78,38 +85,102 @@ db.serialize(async () => {
         { tabela: 'avaliacoes', coluna: `coxa REAL` },
         { tabela: 'avaliacoes', coluna: `peitoral REAL` }
     ];
+
+
     colunasParaAdicionar.forEach(({ tabela, coluna }) => {
-        db.run(`ALTER TABLE ${tabela} ADD COLUMN ${coluna}`, (err) => {
-            // ignorar erros de coluna já existente
-        });
+
+        db.run(
+            `ALTER TABLE ${tabela} ADD COLUMN ${coluna}`,
+            () => {}
+        );
+
     });
 
-    // Inserir Admin Padrão
-    try {
-        const adminUsername = 'admin123';
-        const adminPassword = await bcrypt.hash('09162828', 10);
 
-        db.get("SELECT * FROM users WHERE username = ?", [adminUsername], (err, row) => {
-            if (err) {
-                console.error('Erro ao checar usuário admin:', err.message);
-                return;
+
+    // Criar administrador usando .env
+    try {
+
+        const adminUsername = process.env.ADMIN_USERNAME;
+        const adminPassword = process.env.ADMIN_PASSWORD;
+
+
+        if (!adminUsername || !adminPassword) {
+            console.log(
+                'ADMIN_USERNAME ou ADMIN_PASSWORD não configurados.'
+            );
+            return;
+        }
+
+
+        const senhaHash = await bcrypt.hash(adminPassword, 10);
+
+
+        db.get(
+            "SELECT * FROM users WHERE username = ?",
+            [adminUsername],
+            (err, row) => {
+
+                if (err) {
+                    console.error(
+                        'Erro ao verificar admin:',
+                        err.message
+                    );
+                    return;
+                }
+
+
+                if (!row) {
+
+                    db.run(
+                        `
+                        INSERT INTO users 
+                        (nome_completo, username, password, role)
+                        VALUES (?, ?, ?, ?)
+                        `,
+                        [
+                            'Administrador Supremo',
+                            adminUsername,
+                            senhaHash,
+                            'admin'
+                        ],
+                        (insertErr) => {
+
+                            if (insertErr) {
+                                console.error(
+                                    'Erro ao criar admin:',
+                                    insertErr.message
+                                );
+                            } else {
+                                console.log(
+                                    'Conta admin criada pelo'
+                                );
+                            }
+
+                        }
+                    );
+
+
+                } else {
+
+                    console.log('Conta admin já existe.');
+
+                }
+
             }
-            if (!row) {
-                db.run(
-                    "INSERT INTO users (nome_completo, username, password, role) VALUES (?, ?, ?, ?)",
-                    ['Administrador Supremo', adminUsername, adminPassword, 'admin'],
-                    (insertErr) => {
-                        if (insertErr) console.error('Erro ao criar admin:', insertErr.message);
-                        else console.log('✅ Conta Admin (admin123) pronta!');
-                    }
-                );
-            } else {
-                console.log('ℹ️ Conta Admin já existe.');
-            }
-        });
-    } catch (e) {
-        console.error('Erro ao criar senha do admin:', e.message);
+        );
+
+
+    } catch (error) {
+
+        console.error(
+            'Erro ao criar administrador:',
+            error.message
+        );
+
     }
+
 });
+
 
 module.exports = db;

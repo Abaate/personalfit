@@ -37,6 +37,11 @@
     box-sizing: border-box;
 }
 
+html {
+    /* Evita que o texto encolha automaticamente no iOS quando o teclado abre */
+    -webkit-text-size-adjust: 100%;
+}
+
 body {
     font-family: 'Inter', 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
     background-color: var(--ink-950);
@@ -48,11 +53,17 @@ body {
     justify-content: center;
     align-items: center;
     min-height: 100vh;
+    min-height: 100dvh; /* corrige altura em navegadores mobile com barra de endereço */
 }
 
 h1, h2, h3, h4 {
     font-family: 'Space Grotesk', 'Segoe UI', sans-serif;
     letter-spacing: -0.01em;
+}
+
+img, svg {
+    max-width: 100%;
+    display: block;
 }
 
 /* ================= Telas de Autenticação ================= */
@@ -94,7 +105,7 @@ h2 {
     border-radius: var(--radius-sm);
     background-color: var(--ink-800);
     color: var(--text-hi);
-    font-size: 14px;
+    font-size: 16px; /* >=16px evita zoom automático no iOS ao focar o campo */
     outline: none;
     transition: border-color .2s ease, box-shadow .2s ease;
 }
@@ -121,6 +132,7 @@ h2 {
     cursor: pointer;
     transition: transform .15s ease, background-color .2s ease, filter .2s ease;
     font-family: inherit;
+    -webkit-tap-highlight-color: transparent;
 }
 
 .btn-primary {
@@ -175,6 +187,7 @@ h2 {
 .app-container {
     width: 100%;
     min-height: 100vh;
+    min-height: 100dvh;
     display: flex;
     flex-direction: column;
 }
@@ -184,6 +197,8 @@ h2 {
     backdrop-filter: blur(8px);
     padding: 18px 28px;
     display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
     justify-content: space-between;
     align-items: center;
     border-bottom: 1px solid var(--ink-700);
@@ -196,18 +211,23 @@ h2 {
     display: flex;
     align-items: center;
     gap: 10px;
+    min-width: 0; /* permite que o texto trunque em vez de estourar a tela */
 }
 
 .brand-mark {
     color: var(--lime-500);
     font-size: 18px;
     line-height: 1;
+    flex-shrink: 0;
 }
 
 .navbar h1 {
     font-size: 19px;
     font-weight: 700;
     color: var(--text-hi);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
 }
 
 .role-badge {
@@ -224,6 +244,7 @@ h2 {
     display: flex;
     align-items: center;
     gap: 16px;
+    flex-wrap: wrap;
 }
 
 .user-name {
@@ -344,6 +365,7 @@ h2 {
 .table-wrap {
     overflow-x: auto;
     margin-top: 12px;
+    -webkit-overflow-scrolling: touch; /* rolagem suave em iOS */
 }
 
 table {
@@ -357,6 +379,7 @@ th, td {
     text-align: left;
     border-bottom: 1px solid var(--ink-800);
     color: var(--text-mid);
+    white-space: nowrap; /* mantém a tabela legível e deixa o scroll horizontal cuidar do resto */
 }
 
 td {
@@ -377,14 +400,108 @@ tbody tr:hover {
 
 /* ================= Responsivo ================= */
 
+/* Tablets e telas médias */
+@media (max-width: 768px) {
+    .content-area {
+        padding: 20px;
+    }
+
+    .card {
+        padding: 18px;
+    }
+
+    .section-header h2 {
+        font-size: 22px;
+    }
+}
+
+/* Celulares */
 @media (max-width: 640px) {
+    body {
+        align-items: stretch; /* em telas pequenas o conteúdo cresce naturalmente, sem centralizar cortando o topo */
+    }
+
+    .auth-container {
+        max-width: 100%;
+        padding: 28px 20px;
+        border-radius: var(--radius-md);
+    }
+
     .navbar {
         padding: 14px 16px;
+        gap: 8px;
     }
+
+    .navbar h1 {
+        font-size: 17px;
+        max-width: 55vw;
+    }
+
+    .role-badge {
+        display: block;
+        margin-left: 0;
+        margin-top: 2px;
+    }
+
+    .navbar-actions {
+        gap: 10px;
+    }
+
+    .user-name {
+        display: none;
+    }
+
     .content-area {
         padding: 16px;
     }
-    .user-name {
-        display: none;
+
+    .section-header h2 {
+        font-size: 20px;
+    }
+
+    .section-subtitle {
+        font-size: 13px;
+    }
+
+    .card {
+        padding: 16px;
+        border-radius: var(--radius-md);
+    }
+
+    .card h3 {
+        font-size: 15px;
+    }
+
+    /* Ações dentro dos cards (ex.: "Iniciar treino agora") ocupam a largura toda,
+       facilitando o toque em telas pequenas */
+    .btn {
+        font-size: 14px;
+        padding: 12px;
+    }
+
+    th, td {
+        padding: 10px 8px;
+        font-size: 13px;
+    }
+}
+
+/* Telas bem pequenas (celulares estreitos) */
+@media (max-width: 380px) {
+    .navbar h1 {
+        font-size: 15px;
+        max-width: 45vw;
+    }
+
+    .content-area {
+        padding: 12px;
+    }
+
+    .card {
+        padding: 14px;
+    }
+
+    .btn-sm {
+        padding: 8px 12px;
+        font-size: 12px;
     }
 }

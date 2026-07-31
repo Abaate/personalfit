@@ -728,6 +728,6 @@ app.get(/^\/(?!api\/).*/, (req, res) => {
 /* ---------------- Start server ---------------- */
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-    console.log(`🚀 Servidor FitPro ativo em http://localhost:${PORT}`);
-    console.log(`🔁 FFmpeg usando: ${ffmpegPath || 'você precisa garantir ffmpeg no PATH'}`);
+    console.log(`Servidor ativo em http://localhost:${PORT}`);
+    console.log(`FFmpeg ativo}`);
 });
