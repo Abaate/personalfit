@@ -1,4 +1,6 @@
-// server.js (versão atualizada — integra conversão via FFmpeg + fila + busca no dataset)
+// server.js
+// Backend unificado: API + dataset search (com traduções) + endpoint de conversão FFmpeg com fila simples
+
 const express = require('express');
 const cors = require('cors');
 const bcrypt = require('bcryptjs');
@@ -7,10 +9,12 @@ const path = require('path');
 const https = require('https');
 const http = require('http');
 const fs = require('fs');
-const os = require('os');
 const fsExtra = require('fs-extra');
+const os = require('os');
 const multer = require('multer');
-const { v4: uuidv4 } = require('uuid');
+const { pipeline } = require('stream');
+const { promisify } = require('util');
+
 const ffmpegPath = require('ffmpeg-static');
 const ffmpeg = require('fluent-ffmpeg');
 
@@ -22,26 +26,25 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-// Serve favicon (evita 404 no console)
+// Servir frontend
 app.get('/favicon.ico', (req, res) => {
   res.sendFile(path.join(__dirname, '../frontend/favicon.ico'));
 });
-
-// Servir frontend estático (ajuste o path se necessário)
-const FRONTEND_DIR = path.join(__dirname, '../frontend');
-app.use(express.static(FRONTEND_DIR));
+app.use(express.static(path.join(__dirname, '../frontend')));
 
 const SECRET_KEY = process.env.SECRET_KEY || "chave_secreta_fitapp_producao";
 
-/* ---------------- Dataset loading (mesmo comportamento anterior) ---------------- */
+/* ------------------- Dataset & Translations loading ------------------- */
+
 const DATASET_OWNER = 'hasaneyldrm';
 const DATASET_REPO = 'exercises-dataset';
 const DATASET_BRANCH = 'main';
 const RAW_BASE = `https://raw.githubusercontent.com/${DATASET_OWNER}/${DATASET_REPO}/${DATASET_BRANCH}/`;
 
 let exercisesDataset = [];
+let translations = {}; // english -> portuguese
+let reverseTranslations = {}; // normalized portuguese -> [englishKeys]
 
-/* utility functions reused/ported */
 function normalize(s) {
     return String(s || '')
       .toLowerCase()
@@ -51,13 +54,41 @@ function normalize(s) {
       .replace(/\s+/g, ' ')
       .trim();
 }
+
+function loadTranslations() {
+    try {
+        const p = path.join(__dirname, 'translations.json');
+        if (fs.existsSync(p)) {
+            translations = JSON.parse(fs.readFileSync(p, 'utf8'));
+            // build reverse index: normalized(pt) -> [engKey,...]
+            reverseTranslations = {};
+            for (const [eng, pt] of Object.entries(translations)) {
+                const n = normalize(pt);
+                if (!reverseTranslations[n]) reverseTranslations[n] = [];
+                reverseTranslations[n].push(eng);
+            }
+            console.log(`✅ translations.json carregado (${Object.keys(translations).length} entradas).`);
+        } else {
+            console.warn('⚠️ translations.json não encontrado.');
+            translations = {};
+            reverseTranslations = {};
+        }
+    } catch (e) {
+        console.warn('Erro ao carregar translations.json:', e.message);
+        translations = {};
+        reverseTranslations = {};
+    }
+}
+loadTranslations();
+
+/* dataset loading (try require, fallback to GitHub raw fetch) */
+function getRawUrl(p) {
+    if (!p) return null;
+    const trimmed = String(p).replace(/^\/*/, '');
+    return RAW_BASE + trimmed;
+}
 function isHttpUrl(s) {
     return typeof s === 'string' && /^https?:\/\//i.test(s);
-}
-function resolveRelativePathToRaw(p) {
-    if (!p || typeof p !== 'string') return null;
-    const trimmed = p.replace(/^\/*/, '');
-    return RAW_BASE + trimmed;
 }
 function extractYouTubeIdFromUrl(url) {
     if (!url || typeof url !== 'string') return null;
@@ -72,16 +103,43 @@ function extractYouTubeIdFromUrl(url) {
 function isVideoOrImageFileString(s) {
     if (!s || typeof s !== 'string') return false;
     const lower = s.toLowerCase();
-    return lower.match(/\.(mp4|webm|ogg|gif|jpe?g|png|webp)(\?|$)/) || lower.includes('youtube.com') || lower.includes('youtu.be');
+    return !!lower.match(/\.(mp4|webm|ogg|gif|jpe?g|png|webp)(\?|$)/) || lower.includes('youtube.com') || lower.includes('youtu.be');
+}
+
+function getUrlFromItem(item) {
+    if (!item) return null;
+    const keys = ['demonstration','demonstracao','demo','video','videos','youtube','video_url','videoUrl','gif','gif_url','image','image_url','media','url','link','files','resources','assets'];
+    for (const k of keys) {
+        if (k in item && item[k]) {
+            const cand = item[k];
+            if (typeof cand === 'string') {
+                const s = cand.trim();
+                if (isVideoOrImageFileString(s)) {
+                    if (!isHttpUrl(s)) return getRawUrl(s);
+                    // map youtube id -> watch url
+                    const yt = extractYouTubeIdFromUrl(s);
+                    if (yt) return `https://www.youtube.com/watch?v=${yt}`;
+                    return s;
+                }
+                if (/^[A-Za-z0-9_-]{11}$/.test(s)) return `https://www.youtube.com/watch?v=${s}`;
+                if (s.match(/^(images|videos|assets)\/.+/i)) return getRawUrl(s);
+            } else if (Array.isArray(cand) || typeof cand === 'object') {
+                // try deeper
+                const rec = findVideoUrlInObject(cand);
+                if (rec) return rec;
+            }
+        }
+    }
+    const rec = findVideoUrlInObject(item);
+    if (rec) return rec;
+    return null;
 }
 function findVideoUrlInObject(obj, depth = 0) {
     if (!obj || depth > 6) return null;
     if (typeof obj === 'string') {
         const s = obj.trim();
         if (isVideoOrImageFileString(s)) {
-            if (!isHttpUrl(s)) {
-                return resolveRelativePathToRaw(s);
-            }
+            if (!isHttpUrl(s)) return getRawUrl(s);
             const yt = extractYouTubeIdFromUrl(s);
             if (yt) return `https://www.youtube.com/watch?v=${yt}`;
             return s;
@@ -90,7 +148,7 @@ function findVideoUrlInObject(obj, depth = 0) {
             return `https://www.youtube.com/watch?v=${s}`;
         }
         if (s.match(/^(images|videos|assets)\/.+/i)) {
-            return resolveRelativePathToRaw(s);
+            return getRawUrl(s);
         }
         return null;
     }
@@ -102,44 +160,11 @@ function findVideoUrlInObject(obj, depth = 0) {
         return null;
     }
     if (typeof obj === 'object') {
-        const priorityKeys = ['video', 'videos', 'video_url', 'videoUrl', 'gif_url', 'gif', 'image', 'image_url', 'imageUrl', 'youtube', 'youtube_id', 'media', 'demonstration', 'demo', 'url', 'link', 'files', 'resources', 'assets'];
-        for (const k of priorityKeys) {
-            if (k in obj && obj[k]) {
-                const found = findVideoUrlInObject(obj[k], depth + 1);
-                if (found) return found;
-            }
-        }
-        for (const key of Object.keys(obj)) {
-            const found = findVideoUrlInObject(obj[key], depth + 1);
+        for (const k of Object.keys(obj)) {
+            const found = findVideoUrlInObject(obj[k], depth + 1);
             if (found) return found;
         }
     }
-    return null;
-}
-function getUrlFromItem(item) {
-    if (!item) return null;
-    const directKeys = ['demonstration', 'demonstracao', 'demo', 'video', 'videos', 'youtube', 'video_url', 'videoUrl', 'gif_url', 'gif', 'image', 'image_url', 'media', 'url', 'link'];
-    for (const k of directKeys) {
-        if (k in item && item[k]) {
-            const cand = item[k];
-            if (typeof cand === 'string') {
-                const s = cand.trim();
-                if (isVideoOrImageFileString(s)) {
-                    if (!isHttpUrl(s)) return resolveRelativePathToRaw(s);
-                    const yt = extractYouTubeIdFromUrl(s);
-                    if (yt) return `https://www.youtube.com/watch?v=${yt}`;
-                    return s;
-                }
-                if (/^[A-Za-z0-9_-]{11}$/.test(s)) return `https://www.youtube.com/watch?v=${s}`;
-                if (s.match(/^(images|videos|assets)\/.+/i)) return resolveRelativePathToRaw(s);
-            } else {
-                const rec = findVideoUrlInObject(cand);
-                if (rec) return rec;
-            }
-        }
-    }
-    const rec = findVideoUrlInObject(item);
-    if (rec) return rec;
     return null;
 }
 
@@ -159,9 +184,11 @@ function tryRequireDataset() {
         return null;
     }
 }
+
 function fetchJsonRaw(url, timeoutMs = 30000) {
     return new Promise((resolve, reject) => {
-        https.get(url, { timeout: timeoutMs }, (res) => {
+        const client = url.startsWith('https') ? https : http;
+        client.get(url, { timeout: timeoutMs }, (res) => {
             if (res.statusCode !== 200) {
                 reject(new Error(`HTTP ${res.statusCode} ao buscar ${url}`));
                 res.resume();
@@ -180,6 +207,7 @@ function fetchJsonRaw(url, timeoutMs = 30000) {
         }).on('error', (err) => reject(err));
     });
 }
+
 async function tryFetchFromGitHub() {
     const filePath = 'data/exercises.json';
     const url = `${RAW_BASE}${filePath}`;
@@ -218,12 +246,230 @@ async function loadExercisesDataset() {
         return;
     }
 }
-loadExercisesDataset().catch(e => {
-    exercisesDataset = [];
-    console.warn('⚠️ Erro ao carregar exercises-dataset:', e.message);
-});
+loadExercisesDataset()
+    .then(() => buildDatasetIndex())
+    .catch(e => {
+        exercisesDataset = [];
+        console.warn('Erro ao carregar dataset:', e.message);
+    });
 
-/* ---------------- Simple levenshtein & search (copiado) ---------------- */
+/* ------------------- Search & matching (melhorias para PT-BR) ------------------- */
+
+// Dicionário de MOVIMENTOS base (o "nome principal" do exercício). Frases mais
+// longas ficam primeiro em cada bloco para serem casadas antes das curtas.
+const MOVIMENTOS_DICT = [
+    ['bench press', 'Supino'],
+    ['squat', 'Agachamento'],
+    ['deadlift', 'Levantamento Terra'],
+    ['pull up', 'Barra Fixa'],
+    ['pullup', 'Barra Fixa'],
+    ['chin up', 'Barra Supinada'],
+    ['chinup', 'Barra Supinada'],
+    ['lat pulldown', 'Puxada na Frente'],
+    ['pulldown', 'Puxada'],
+    ['seated row', 'Remada Sentada'],
+    ['bent over row', 'Remada Curvada'],
+    ['upright row', 'Remada Alta'],
+    ['inverted row', 'Remada Invertida'],
+    ['cable row', 'Remada no Cabo'],
+    ['row', 'Remada'],
+    ['overhead press', 'Desenvolvimento'],
+    ['military press', 'Desenvolvimento Militar'],
+    ['shoulder press', 'Desenvolvimento de Ombro'],
+    ['press', 'Desenvolvimento'],
+    ['lateral raise', 'Elevação Lateral'],
+    ['front raise', 'Elevação Frontal'],
+    ['leg raise', 'Elevação de Pernas'],
+    ['calf raise', 'Elevação de Panturrilha'],
+    ['hip thrust', 'Hip Thrust'],
+    ['glute bridge', 'Ponte para Glúteos'],
+    ['raise', 'Elevação'],
+    ['reverse fly', 'Crucifixo Invertido'],
+    ['chest fly', 'Crucifixo'],
+    ['fly', 'Crucifixo'],
+    ['flye', 'Crucifixo'],
+    ['biceps curl', 'Rosca Bíceps'],
+    ['bicep curl', 'Rosca Bíceps'],
+    ['hammer curl', 'Rosca Martelo'],
+    ['leg curl', 'Flexão de Pernas'],
+    ['curl', 'Rosca'],
+    ['triceps extension', 'Extensão de Tríceps'],
+    ['tricep extension', 'Extensão de Tríceps'],
+    ['leg extension', 'Extensão de Pernas'],
+    ['extension', 'Extensão'],
+    ['triceps pushdown', 'Puxada de Tríceps'],
+    ['tricep pushdown', 'Puxada de Tríceps'],
+    ['pushdown', 'Puxada'],
+    ['dips', 'Mergulho'],
+    ['dip', 'Mergulho'],
+    ['walking lunges', 'Avanço Andando'],
+    ['lunges', 'Avanço'],
+    ['lunge', 'Avanço'],
+    ['step up', 'Step-up'],
+    ['leg press', 'Leg Press'],
+    ['kettlebell swing', 'Swing'],
+    ['swing', 'Swing'],
+    ['burpee', 'Burpee'],
+    ['mountain climber', 'Alpinista'],
+    ['side plank', 'Prancha Lateral'],
+    ['plank', 'Prancha'],
+    ['russian twist', 'Torção Russa'],
+    ['twist', 'Torção'],
+    ['bicycle crunch', 'Abdominal Bicicleta'],
+    ['crunch', 'Abdominal'],
+    ['sit up', 'Abdominal (Sit-up)'],
+    ['situp', 'Abdominal (Sit-up)'],
+    ['pec deck', 'Peck Deck'],
+    ['face pull', 'Face Pull'],
+    ['farmers walk', 'Caminhada do Fazendeiro'],
+    ["farmer's walk", 'Caminhada do Fazendeiro'],
+    ['box jump', 'Salto no Caixote'],
+    ['jump', 'Salto'],
+    ['jumping jacks', 'Polichinelos'],
+    ['pullover', 'Pullover'],
+    ['cable crossover', 'Crossover no Cabo'],
+    ['crossover', 'Crossover'],
+    ['skull crusher', 'Skull Crusher'],
+    ['good morning', 'Good Morning'],
+    ['high pull', 'High Pull'],
+];
+
+// Dicionário de MODIFICADORES (equipamento, posição, direção, lateralidade etc.)
+// Cada entrada é [regex de palavra(s) em inglês, tradução em português].
+const MODIFICADORES_DICT = [
+    ['barbell', 'com barra'],
+    ['dumbbell', 'com halteres'],
+    ['dumbbells', 'com halteres'],
+    ['kettlebell', 'com kettlebell'],
+    ['resistance band', 'com elástico'],
+    ['band', 'com elástico'],
+    ['bodyweight', 'com peso corporal'],
+    ['machine', 'na máquina'],
+    ['smith machine', 'na máquina smith'],
+    ['smith', 'na máquina smith'],
+    ['cable', 'no cabo'],
+    ['plate', 'com anilha'],
+    ['incline', 'inclinado'],
+    ['decline', 'declinado'],
+    ['flat', 'reto'],
+    ['seated', 'sentado'],
+    ['standing', 'em pé'],
+    ['lying', 'deitado'],
+    ['bent over', 'curvado'],
+    ['single arm', 'unilateral'],
+    ['single leg', 'unilateral'],
+    ['one arm', 'unilateral'],
+    ['one leg', 'unilateral'],
+    ['alternating', 'alternado'],
+    ['close grip', 'pegada fechada'],
+    ['wide grip', 'pegada aberta'],
+    ['neutral grip', 'pegada neutra'],
+    ['underhand', 'pegada supinada'],
+    ['overhand', 'pegada pronada'],
+    ['reverse grip', 'pegada invertida'],
+    ['reverse', 'invertido'],
+    ['assisted', 'assistido'],
+    ['weighted', 'com peso'],
+    ['front', 'frontal'],
+    ['back', 'nas costas'],
+    ['overhead', 'acima da cabeça'],
+    ['lateral', 'lateral'],
+    ['romanian', 'romeno'],
+    ['sumo', 'sumô'],
+    ['hip', 'de quadril'],
+    ['glute', 'de glúteo'],
+    ['chest', 'de peitoral'],
+    ['shoulder', 'de ombro'],
+    ['leg', 'de perna'],
+    ['calf', 'de panturrilha'],
+    ['biceps', 'de bíceps'],
+    ['bicep', 'de bíceps'],
+    ['triceps', 'de tríceps'],
+    ['tricep', 'de tríceps'],
+    ['dumbbell press', 'com halteres'],
+];
+
+function translateWordDict(text, dict) {
+    // Aplica o dicionário buscando, em ordem, as chaves como frases inteiras
+    // (com limites de palavra), removendo o que for encontrado do texto restante.
+    let remaining = ` ${text} `;
+    let found = [];
+    for (const [en, pt] of dict) {
+        const re = new RegExp(`\\s${en.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s`, 'i');
+        if (re.test(remaining)) {
+            found.push(pt);
+            remaining = remaining.replace(re, ' ');
+        }
+    }
+    return { found, remaining: remaining.trim() };
+}
+
+function translateNameToPt(originalName) {
+    if (!originalName) return originalName || '';
+    const key = String(originalName).toLowerCase().trim();
+
+    // 1) Prioridade máxima: match exato/curado em translations.json
+    if (translations[key]) return translations[key];
+    const norm = normalize(originalName);
+    for (const engKey of Object.keys(translations)) {
+        if (normalize(engKey) === norm) return translations[engKey];
+    }
+
+    // 2) Tradução por peças: separa "movimento" (ex: bench press) dos
+    // "modificadores" (ex: barbell, incline) e monta a frase em português.
+    let working = ` ${normalize(originalName)} `;
+    let movimentoPt = null;
+
+    for (const [en, pt] of MOVIMENTOS_DICT) {
+        const re = new RegExp(`\\s${en.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s`, 'i');
+        if (re.test(working)) {
+            movimentoPt = pt;
+            working = working.replace(re, ' ');
+            break; // usa apenas o primeiro (mais específico) movimento encontrado
+        }
+    }
+
+    const { found: modificadoresPt } = translateWordDict(working, MODIFICADORES_DICT);
+
+    if (movimentoPt) {
+        const partes = [movimentoPt, ...modificadoresPt];
+        return partes.join(' ').replace(/\s+/g, ' ').trim();
+    }
+
+    // 3) Nada reconhecido como movimento: tenta traduzir modificadores mesmo
+    // assim (melhor que nada) e mantém o restante como veio.
+    if (modificadoresPt.length > 0) {
+        const capitalizado = originalName.charAt(0).toUpperCase() + originalName.slice(1);
+        return `${capitalizado} (${modificadoresPt.join(', ')})`;
+    }
+
+    // 4) Fallback final: devolve o nome original sem tradução.
+    return originalName;
+}
+
+/* Índice pré-computado do dataset (nome original + nome em PT + urls),
+   construído uma vez após o dataset carregar, para buscas rápidas e
+   sempre em português. */
+let datasetIndex = [];
+
+function buildDatasetIndex() {
+    datasetIndex = [];
+    for (const item of exercisesDataset) {
+        const originalName = String(item.name || item.title || item.nome || item.label || item.exercise || '').trim();
+        if (!originalName) continue;
+        const namePt = translateNameToPt(originalName);
+        datasetIndex.push({
+            item,
+            originalName,
+            namePt,
+            normalizedPt: normalize(namePt),
+            normalizedEn: normalize(originalName),
+            url: getUrlFromItem(item)
+        });
+    }
+    console.log(`✅ Índice de exercícios traduzido para PT-BR (${datasetIndex.length} itens).`);
+}
+
 function levenshtein(a, b) {
     if (a === b) return 0;
     const al = a.length;
@@ -245,50 +491,63 @@ function levenshtein(a, b) {
     }
     return v0[bl];
 }
+
+function scoreAgainst(qTokens, q, normalizedTarget) {
+    const nTokens = normalizedTarget.split(' ').filter(Boolean);
+    const common = qTokens.filter(t => nTokens.includes(t)).length;
+    const tokenRatio = qTokens.length ? (common / qTokens.length) : 0;
+    const contains = normalizedTarget.includes(q) ? 1 : 0;
+    const dist = levenshtein(normalizedTarget, q);
+    const levSim = 1 - (dist / Math.max(1, Math.max(normalizedTarget.length, q.length)));
+    let score = 0;
+    if (normalizedTarget === q) score += 200;
+    score += tokenRatio * 100;
+    score += contains ? 100 : 0;
+    score += levSim * 40;
+    return score;
+}
+
 function findMatchesSimple(query, limit = 6) {
-    if (!query || !exercisesDataset || exercisesDataset.length === 0) return [];
+    if (!query) return [];
+    if (!datasetIndex || datasetIndex.length === 0) return [];
+
     const q = normalize(query);
     const qTokens = q.split(' ').filter(Boolean);
+
     const scored = [];
-
-    for (const item of exercisesDataset) {
-        const originalName = item.name || item.title || item.nome || item.exercise || item.label || '';
-        const n = normalize(originalName);
-        if (!n) continue;
-        const url = getUrlFromItem(item);
-
-        // compute scores
-        const nTokens = n.split(' ').filter(Boolean);
-        const common = qTokens.filter(t => nTokens.includes(t)).length;
-        const tokenRatio = qTokens.length ? (common / qTokens.length) : 0;
-        const contains = n.includes(q) ? 1 : 0;
-        const dist = levenshtein(n, q);
-        const levSim = 1 - (dist / Math.max(1, Math.max(n.length, q.length)));
-        let score = 0;
-        if (n === q) score += 200;
-        score += tokenRatio * 100;
-        score += contains ? 100 : 0;
-        score += levSim * 40;
-        if (url) score += 10;
+    for (const entry of datasetIndex) {
+        // Pontua contra o nome em português (prioridade) e contra o nome em
+        // inglês (caso o usuário digite em inglês) — usa o maior dos dois.
+        const scorePt = scoreAgainst(qTokens, q, entry.normalizedPt);
+        const scoreEn = scoreAgainst(qTokens, q, entry.normalizedEn) * 0.85;
+        const score = Math.max(scorePt, scoreEn) + (entry.url ? 10 : 0);
 
         if (score > 5) {
-            scored.push({ item, name: originalName, normalized: n, url, score });
+            scored.push({ entry, score });
         }
     }
 
-    scored.sort((a,b) => b.score - a.score);
+    scored.sort((a, b) => b.score - a.score);
+
     const unique = [];
     const seen = new Set();
     for (const s of scored) {
-        if (seen.has(s.normalized)) continue;
-        seen.add(s.normalized);
-        unique.push({ name: s.name, url: s.url || null, score: Math.round(s.score), raw: s.item });
+        const dedupeKey = s.entry.normalizedPt;
+        if (seen.has(dedupeKey)) continue;
+        seen.add(dedupeKey);
+        unique.push({
+            name: s.entry.namePt,
+            original_name: s.entry.originalName,
+            url: s.entry.url || null,
+            score: Math.round(s.score),
+            raw: s.entry.item
+        });
         if (unique.length >= limit) break;
     }
     return unique;
 }
 
-/* ---------------- Auth middleware (mesmo) ---------------- */
+/* ------------------- Auth middleware ------------------- */
 function authenticateToken(req, res, next) {
     const token = req.header('Authorization');
     if (!token) return res.status(401).json({ error: 'Acesso negado. Token não fornecido.' });
@@ -300,8 +559,9 @@ function authenticateToken(req, res, next) {
     });
 }
 
-/* ---------------- Existing routes (login, cadastro, etc.) ---------------- */
-// -- (mantenho as rotas originais que você já tinha; copio aqui apenas para contexto, sem mudanças relevantes)
+/* ------------------- Routes (existing ones) ------------------- */
+
+// Login
 app.post('/api/login', (req, res) => {
     const { username, password } = req.body;
     db.get("SELECT * FROM users WHERE username = ?", [username], async (err, user) => {
@@ -314,6 +574,7 @@ app.post('/api/login', (req, res) => {
     });
 });
 
+// Cadastro
 app.post('/api/cadastrar', async (req, res) => {
     const { nome_completo, username, password, role = 'aluno' } = req.body;
     if (!nome_completo || !username || !password) {
@@ -329,6 +590,7 @@ app.post('/api/cadastrar', async (req, res) => {
     );
 });
 
+// Listar alunos
 app.get('/api/alunos', authenticateToken, (req, res) => {
     if (req.user.role !== 'admin' && req.user.role !== 'personal') {
         return res.status(403).json({ error: 'Acesso restrito a treinadores e administradores.' });
@@ -339,6 +601,7 @@ app.get('/api/alunos', authenticateToken, (req, res) => {
     });
 });
 
+// Avaliacoes
 app.post('/api/avaliacoes', authenticateToken, (req, res) => {
     const { aluno_id, peso, altura, bf, cintura, braco, coxa, peitoral } = req.body;
     if (!aluno_id || peso == null || altura == null) {
@@ -355,6 +618,7 @@ app.post('/api/avaliacoes', authenticateToken, (req, res) => {
         }
     );
 });
+
 app.get('/api/avaliacoes/aluno/:aluno_id', authenticateToken, (req, res) => {
     const alunoId = req.params.aluno_id;
     db.all("SELECT * FROM avaliacoes WHERE aluno_id = ? ORDER BY data DESC", [alunoId], (err, rows) => {
@@ -363,6 +627,7 @@ app.get('/api/avaliacoes/aluno/:aluno_id', authenticateToken, (req, res) => {
     });
 });
 
+/* ------------------- Search route (improved) ------------------- */
 app.get('/api/exercicios/search', (req, res) => {
     const name = req.query.name || '';
     const limit = Math.min(20, Math.max(1, parseInt(req.query.limit || '6', 10)));
@@ -371,6 +636,7 @@ app.get('/api/exercicios/search', (req, res) => {
     res.json({ matches });
 });
 
+/* ------------------- Treinos (insert + get) ------------------- */
 app.post('/api/treinos', authenticateToken, (req, res) => {
     const { aluno_id, titulo, nivel, descricao, exercicios } = req.body;
     if (!aluno_id || !titulo || !exercicios || !exercicios.length) {
@@ -427,8 +693,10 @@ app.get('/api/treinos/aluno/:aluno_id', authenticateToken, (req, res) => {
                 }
                 const normalizedEx = (exercicios || []).map(e => {
                     let demo = e.demonstracao_url;
-                    if (demo && !isHttpUrl(demo) && demo.trim() !== '') demo = resolveRelativePathToRaw(demo);
-                    return { ...e, demonstracao_url: demo || '' };
+                    if (demo && !isHttpUrl(demo) && demo.trim() !== '') demo = getRawUrl(demo);
+                    // traduzir nomes se o exercício for do dataset (em inglês) - se estiver em PT, deixamos
+                    const translated = translateNameToPt(e.nome);
+                    return { ...e, demonstracao_url: demo || '', nome_pt: translated };
                 });
                 resultadoFinal.push({ ...treino, exercicios: normalizedEx });
                 treinosCarregados++;
@@ -440,6 +708,7 @@ app.get('/api/treinos/aluno/:aluno_id', authenticateToken, (req, res) => {
     });
 });
 
+/* ------------------- Toggle / Delete ------------------- */
 app.put('/api/exercicios/:id/toggle', authenticateToken, (req, res) => {
     const exId = req.params.id;
     db.get("SELECT concluido FROM exercicios WHERE id = ?", [exId], (err, row) => {
@@ -460,274 +729,237 @@ app.delete('/api/treinos/:id', authenticateToken, (req, res) => {
     });
 });
 
-/* -------------------- Convertion endpoint + queue -------------------- */
-// TMP DIR
+// NOVA ROTA: apagar usuário (apenas admin)
+app.delete('/api/users/:id', authenticateToken, (req, res) => {
+    const userId = req.params.id;
+    // Apenas administradores podem apagar contas
+    if (req.user.role !== 'admin') {
+        return res.status(403).json({ error: 'Acesso restrito a administradores.' });
+    }
+    db.run("DELETE FROM users WHERE id = ?", [userId], function(err) {
+        if (err) return res.status(500).json({ error: err.message });
+        if (this.changes === 0) return res.status(404).json({ error: 'Usuário não encontrado.' });
+        res.json({ message: 'Usuário removido com sucesso.' });
+    });
+});
+
+/* ------------------- FFmpeg conversion integrated (fila simples) ------------------- */
+
+// TMP dir
 const TMP_DIR = path.join(os.tmpdir(), 'fitapp-ffmpeg-tmp');
 fsExtra.ensureDirSync(TMP_DIR);
 
-// multer setup (disk)
+// multer for uploads (disk)
 const storage = multer.diskStorage({
   destination: (req, file, cb) => cb(null, TMP_DIR),
   filename: (req, file, cb) => cb(null, `${Date.now()}-${file.originalname.replace(/\s+/g,'_')}`)
 });
-const upload = multer({ storage, limits: { fileSize: 400 * 1024 * 1024 } }); // 400MB
+const upload = multer({ storage, limits: { fileSize: 300 * 1024 * 1024 } }); // 300MB limite (ajuste)
 
-// simple queue
-const MAX_CONCURRENT = 2;
+// Simple concurrency queue
+const MAX_CONCURRENT_JOBS = parseInt(process.env.MAX_FFMPEG_CONCURRENCY || '2', 10);
 let activeJobs = 0;
-const queue = [];
+const jobQueue = [];
 
-function enqueueConversion(task) {
-  queue.push(task);
-  processQueue();
-}
-function processQueue() {
-  if (activeJobs >= MAX_CONCURRENT) return;
-  const task = queue.shift();
-  if (!task) return;
-  activeJobs++;
-  runConversionTask(task)
-    .catch((err) => {
-      // if runConversionTask did not already respond, respond with error
-      if (!task.res.headersSent) {
-        try { task.res.status(500).json({ error: 'Erro interno na conversão', detail: String(err.message || err) }); } catch(e){ }
-      }
-    })
-    .finally(() => {
-      activeJobs--;
-      // process next
-      setImmediate(processQueue);
-    });
-}
+function enqueueJob(jobFn) {
+    return new Promise((resolve, reject) => {
+        const task = async () => {
+            activeJobs++;
+            try {
+                const result = await jobFn();
+                resolve(result);
+            } catch (err) {
+                reject(err);
+            } finally {
+                activeJobs--;
+                // start next queued job
+                if (jobQueue.length > 0) {
+                    const next = jobQueue.shift();
+                    next();
+                }
+            }
+        };
 
-// small downloader (follows basic redirects, returns promise)
-function downloadToFile(url, destPath, timeoutMs = 60000) {
-  return new Promise((resolve, reject) => {
-    const lib = url.startsWith('https') ? https : http;
-    const opts = new URL(url);
-    const req = lib.get(opts, (res) => {
-      // follow redirects (max 5)
-      if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
-        if (opts.redirectCount && opts.redirectCount > 5) {
-          return reject(new Error('Too many redirects'));
+        if (activeJobs < MAX_CONCURRENT_JOBS) {
+            task();
+        } else {
+            jobQueue.push(task);
         }
-        // follow
-        const nextOpts = new URL(res.headers.location, url).toString();
-        res.resume();
-        return downloadToFile(nextOpts, destPath, timeoutMs).then(resolve).catch(reject);
-      } else if (res.statusCode !== 200) {
-        res.resume();
-        return reject(new Error(`HTTP ${res.statusCode} ao baixar ${url}`));
-      } else {
-        const stream = fs.createWriteStream(destPath);
-        res.pipe(stream);
-        stream.on('finish', () => stream.close(() => resolve(destPath)));
-        stream.on('error', (err) => reject(err));
-      }
     });
-    req.on('error', reject);
-    req.setTimeout(timeoutMs, () => {
-      req.destroy(new Error('timeout'));
-    });
-  });
 }
 
-// conversion function using palettegen + paletteuse
-async function convertVideoToGif(inputPath, options = {}) {
-  const fps = Math.max(6, Math.min(30, parseInt(options.fps || '15', 10)));
-  const width = options.width ? Math.max(120, parseInt(options.width,10)) : 640;
-  const start = options.start;
-  const duration = options.duration;
-  const dither = options.dither || 'sierra2_4a';
-  const uid = uuidv4();
-  const palettePath = path.join(TMP_DIR, `palette-${uid}.png`);
-  const outputGifPath = path.join(TMP_DIR, `out-${uid}.gif`);
-
-  // generate palette
-  await new Promise((resolve, reject) => {
-    let cmd = ffmpeg(inputPath)
-      .videoFilters([
-        `fps=${fps}`,
-        `scale=${width}:-1:flags=lanczos`,
-        `palettegen=stats_mode=full`
-      ])
-      .frames(1)
-      .output(palettePath)
-      .on('end', resolve)
-      .on('error', reject);
-
-    if (start) cmd = cmd.seekInput(start);
-    if (duration) cmd = cmd.duration(duration);
-
-    cmd.run();
-  });
-
-  // use palette to create gif
-  await new Promise((resolve, reject) => {
-    // build filter complex path
-    // [0:v] fps,scale -> [vscaled]; [vscaled][1:v] paletteuse
-    const filters = [
-      `fps=${fps}`,
-      `scale=${width}:-1:flags=lanczos`
-    ].join(',');
-
-    let cmd = ffmpeg()
-      .input(inputPath)
-      .input(palettePath)
-      .complexFilter([
-        // apply fps and scale to the main input and then paletteuse with second input
-        {
-          filter: 'fps',
-          options: fps,
-          inputs: '0:v',
-          outputs: 'vfps'
-        },
-        {
-          filter: 'scale',
-          options: { w: width, h: -1, flags: 'lanczos' },
-          inputs: 'vfps',
-          outputs: 'vscaled'
-        },
-        {
-          filter: 'paletteuse',
-          options: { dither: dither },
-          inputs: ['vscaled', '1:v'],
-          outputs: 'gifout'
-        }
-      ], 'gifout')
-      .outputOptions(['-y'])
-      .output(outputGifPath)
-      .on('end', resolve)
-      .on('error', reject);
-
-    if (start) cmd = cmd.seekInput(start);
-    if (duration) cmd = cmd.duration(duration);
-
-    cmd.run();
-  });
-
-  return { outputGifPath, palettePath };
-}
-
-// the worker that runs the conversion and streams result to response
-async function runConversionTask(task) {
-  const { req, res, params } = task;
-
-  // params: { fps, width, start, duration, dither, sourceUrl, keepTemp }
-  let inputPath = null;
-  let tempDownloaded = false;
-  try {
-    if (req.file && req.file.path) {
-      inputPath = req.file.path;
-    } else if (params && params.sourceUrl) {
-      const url = params.sourceUrl;
-      // Do not attempt to fetch YouTube (explicitly blocked here)
-      if (url.includes('youtube.com') || url.includes('youtu.be')) {
-        return res.status(400).json({ error: 'YouTube URLs não são suportadas para download automático. Faça upload do arquivo ou forneça um URL direto (.mp4/.webm/.gif).' });
-      }
-      const dest = path.join(TMP_DIR, `${Date.now()}-remote-${path.basename(new URL(url).pathname) || 'download'}`);
-      await downloadToFile(url, dest, 120000); // 2min timeout
-      inputPath = dest;
-      tempDownloaded = true;
-    } else {
-      return res.status(400).json({ error: 'Nenhum vídeo enviado nem sourceUrl informado.' });
-    }
-
-    // Convert now
-    const { outputGifPath, palettePath } = await convertVideoToGif(inputPath, params);
-
-    // Stream result
-    res.setHeader('Content-Type', 'image/gif');
-    res.setHeader('Content-Disposition', `attachment; filename="animation-${Date.now()}.gif"`);
-    const stream = fs.createReadStream(outputGifPath);
-    stream.pipe(res);
-
-    // cleanup when finished
-    res.on('finish', async () => {
-      try { await fsExtra.remove(outputGifPath); } catch(e){ }
-      try { await fsExtra.remove(palettePath); } catch(e){ }
-      // remove downloaded or uploaded input file (but don't remove if originally provided by other part that should persist)
-      try {
-        if (tempDownloaded) await fsExtra.remove(inputPath);
-        else if (req.file && req.file.path) await fsExtra.remove(req.file.path);
-      } catch(e) { }
+// helper to download remote file to dest
+function downloadFileTo(url, destPath, timeoutMs = 120000) {
+    return new Promise((resolve, reject) => {
+        const client = url.startsWith('https') ? https : http;
+        const req = client.get(url, (res) => {
+            if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+                // follow redirect
+                return downloadFileTo(res.headers.location, destPath, timeoutMs).then(resolve).catch(reject);
+            }
+            if (res.statusCode !== 200) {
+                reject(new Error(`Erro ao baixar (status ${res.statusCode}) ${url}`));
+                res.resume();
+                return;
+            }
+            const fileStream = fs.createWriteStream(destPath);
+            pipeline(res, fileStream, (err) => {
+                if (err) return reject(err);
+                resolve(destPath);
+            });
+        }).on('error', (err) => reject(err)).setTimeout(timeoutMs, () => {
+            req.abort();
+            reject(new Error('Timeout ao baixar arquivo.'));
+        });
     });
-
-  } catch (err) {
-    console.error('Erro durante conversão:', err);
-    // cleanup immediate temp files
-    try { if (req.file && req.file.path) await fsExtra.remove(req.file.path); } catch(e){}
-    return res.status(500).json({ error: 'Falha ao gerar GIF', detail: String(err.message || err) });
-  }
 }
 
-// Endpoint: convert-to-gif
-// Accepts multipart/form-data (file field 'video') OR JSON body with { exercise_name } to fetch from dataset
+const pipelineAsync = promisify(pipeline);
+
+// function to run ffmpeg palette -> gif (inputPath can be local file)
+function convertToGifWithPalette({ inputPath, fps = 15, width = 640, start, duration, dither = 'sierra2_4a', outputPath }) {
+    return new Promise((resolve, reject) => {
+        const palettePath = path.join(TMP_DIR, `palette-${Date.now()}-${Math.random().toString(36).slice(2,8)}.png`);
+
+        // step 1: palettegen
+        let p1 = ffmpeg(inputPath)
+            .videoFilters([
+                `fps=${fps}`,
+                `scale=${width}:-1:flags=lanczos`,
+                `palettegen=stats_mode=full`
+            ])
+            .outputOptions(['-y'])
+            .frames(1)
+            .output(palettePath)
+            .on('error', (err) => {
+                // cleanup palette if exists
+                try { fs.unlinkSync(palettePath); } catch(e){ }
+                reject(err);
+            })
+            .on('end', () => {
+                // step 2: paletteuse
+                // build complex filter to apply fps+scale then paletteuse
+                const filters = [
+                    { filter: 'fps', options: fps, inputs: '0:v', outputs: 'vfps' },
+                    { filter: 'scale', options: { w: width, h: -1, flags: 'lanczos' }, inputs: 'vfps', outputs: 'vscaled' },
+                    { filter: 'paletteuse', options: { dither: dither }, inputs: ['vscaled', '1:v'], outputs: 'gifout' }
+                ];
+                let p2 = ffmpeg()
+                    .input(inputPath)
+                    .input(palettePath)
+                    .complexFilter(filters, 'gifout')
+                    .outputOptions(['-y'])
+                    .output(outputPath)
+                    .on('error', (err2) => {
+                        try { fs.unlinkSync(palettePath); } catch(e){ }
+                        reject(err2);
+                    })
+                    .on('end', () => {
+                        try { fs.unlinkSync(palettePath); } catch(e){ }
+                        resolve(outputPath);
+                    });
+
+                if (start) p2 = p2.seekInput(start);
+                if (duration) p2 = p2.duration(duration);
+
+                p2.run();
+            });
+
+        if (start) p1 = p1.seekInput(start);
+        if (duration) p1 = p1.duration(duration);
+        p1.run();
+    });
+}
+
+// POST /api/convert-to-gif
+// Accepts multipart upload (field 'video') OR JSON body with datasetQuery (string).
 // Optional params: fps, width, start, duration, dither
 app.post('/api/convert-to-gif', upload.single('video'), async (req, res) => {
-  try {
-    // parse params from body or query
-    const fps = req.body.fps || req.query.fps;
-    const width = req.body.width || req.query.width;
+    // parse params
+    const fps = Math.max(6, Math.min(30, parseInt(req.body.fps || req.query.fps || '15', 10)));
+    const width = req.body.width ? Math.max(120, parseInt(req.body.width, 10)) : (req.body.width ? parseInt(req.body.width,10) : 640);
     const start = req.body.start || req.query.start;
     const duration = req.body.duration || req.query.duration;
-    const dither = req.body.dither || req.query.dither;
+    const dither = req.body.dither || req.query.dither || 'sierra2_4a';
 
-    // If no uploaded file, see if user provided exercise_name to lookup in dataset
-    let sourceUrl = null;
-    if (!req.file) {
-      const exerciseName = req.body.exercise_name || req.query.exercise_name;
-      const sourceUrlProvided = req.body.source_url || req.query.source_url;
-      if (sourceUrlProvided) {
-        sourceUrl = sourceUrlProvided;
-      } else if (exerciseName) {
-        // find in dataset
-        const matches = findMatchesSimple(exerciseName, 6);
-        if (!matches || matches.length === 0) {
-          return res.status(404).json({ error: 'Nenhuma demonstração encontrada para esse exercício no dataset.' });
+    // job is either an uploaded file or a dataset query
+    let inputFilePath = null;
+    let cleanupPaths = [];
+
+    try {
+        if (req.file) {
+            inputFilePath = req.file.path;
+            cleanupPaths.push(inputFilePath);
+        } else if (req.body.datasetQuery || req.query.datasetQuery) {
+            const q = req.body.datasetQuery || req.query.datasetQuery;
+            const matches = findMatchesSimple(q, 1);
+            if (!matches || matches.length === 0) {
+                return res.status(404).json({ error: 'Nenhuma demonstração encontrada no dataset para esse termo.' });
+            }
+            const match = matches[0];
+            const url = match.url;
+            if (!url) return res.status(404).json({ error: 'Item encontrado no dataset não possui URL de vídeo diretoa para download.' });
+
+            // Do not support YouTube downloads here
+            if (url.includes('youtube.com') || url.includes('youtu.be')) {
+                return res.status(400).json({ error: 'Downloads de YouTube não são suportados por este endpoint. Forneça um arquivo de vídeo direto ou um link direto (.mp4/.webm/.gif).' });
+            }
+
+            // download remote file to tmp
+            const tmpInput = path.join(TMP_DIR, `download-${Date.now()}-${Math.random().toString(36).slice(2,8)}${path.extname(new URL(url).pathname) || '.mp4'}`);
+            await downloadFileTo(url, tmpInput);
+            inputFilePath = tmpInput;
+            cleanupPaths.push(tmpInput);
+        } else {
+            return res.status(400).json({ error: 'Envie um arquivo no campo "video" ou forneça datasetQuery.' });
         }
-        // pick first match that has a usable url (non-YouTube ideally)
-        const found = matches.find(m => m.url && !m.url.includes('youtube.com') && !m.url.includes('youtu.be')) || matches[0];
-        if (!found.url) {
-          return res.status(404).json({ error: 'Encontrado exercício mas sem URL utilizável (forneça URL direto ou faça upload do arquivo).' });
+
+        // create output path
+        const outPath = path.join(TMP_DIR, `out-${Date.now()}-${Math.random().toString(36).slice(2,8)}.gif`);
+        cleanupPaths.push(outPath);
+
+        // enqueue conversion
+        await enqueueJob(async () => {
+            // run ffmpeg conversion
+            await convertToGifWithPalette({ inputPath: inputFilePath, fps, width, start, duration, dither, outputPath: outPath });
+        });
+
+        // stream GIF back to client
+        res.setHeader('Content-Type', 'image/gif');
+        res.setHeader('Content-Disposition', `attachment; filename="animation-${Date.now()}.gif"`);
+        const stream = fs.createReadStream(outPath);
+        stream.pipe(res);
+
+        // cleanup after response finishes
+        res.on('finish', async () => {
+            setTimeout(async () => {
+                for (const p of cleanupPaths) {
+                    try { await fsExtra.remove(p); } catch (e) { }
+                }
+            }, 1000 * 20);
+        });
+
+    } catch (err) {
+        console.error('Erro na conversão:', err && err.message ? err.message : err);
+        // try cleanup
+        for (const p of cleanupPaths) {
+            try { await fsExtra.remove(p); } catch(e){ }
         }
-        sourceUrl = found.url;
-      } else {
-        // no file and no exercise_name
-        return res.status(400).json({ error: 'Envie um arquivo via form-data (campo "video"), ou forneça exercise_name ou source_url.' });
-      }
+        if (!res.headersSent) {
+            res.status(500).json({ error: 'Falha ao gerar GIF', detail: String(err.message || err) });
+        } else {
+            // headers already sent: just end
+            try { res.end(); } catch(e){ }
+        }
     }
-
-    // prepare params object
-    const params = { fps, width, start, duration, dither, sourceUrl };
-
-    // enqueue job (we pass req so uploaded file path is accessible by worker)
-    enqueueConversion({ req, res, params });
-    // response will be handled by worker; do not send anything here.
-
-  } catch (err) {
-    console.error('Erro endpoint convert-to-gif:', err);
-    return res.status(500).json({ error: 'Erro interno' });
-  }
 });
 
-/* -------------------- Convenience endpoints for frontend serving (fix Vercel 404 on /dashboard) -------------------- */
-// Serve dashboard.html explicitly (helps when static hosting doesn't map root)
-app.get('/dashboard', (req, res) => {
-  res.sendFile(path.join(FRONTEND_DIR, 'dashboard.html'));
-});
-app.get('/dashboard.html', (req, res) => {
-  res.sendFile(path.join(FRONTEND_DIR, 'dashboard.html'));
-});
+/* simple health ping */
+app.get('/ping', (req, res) => res.json({ ok: true, ffmpeg: !!ffmpegPath, concurrent: { max: MAX_CONCURRENT_JOBS, active: activeJobs, queued: jobQueue.length } }));
 
-// SPA fallback: serve index.html for non-API routes (must be after API routes)
-app.get(/^\/(?!api\/).*/, (req, res) => {
-  res.sendFile(path.join(FRONTEND_DIR, 'index.html'));
-});
-
-/* ---------------- Start server ---------------- */
+/* ------------------- Start server ------------------- */
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-    console.log(`Servidor ativo em http://localhost:${PORT}`);
-    console.log(`FFmpeg ativo}`);
+    console.log(`🚀 Servidor FitPro ativo em http://localhost:${PORT}`);
+    console.log(`   FFmpeg path: ${ffmpegPath || '(não encontrado)'}`);
 });
